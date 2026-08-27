@@ -1,0 +1,70 @@
+# The server side of SkyDex: database, API, vision service. The Android app is
+# not here -- build it from https://github.com/GuiBecko/SkyDex-android and point
+# it at this stack.
+#
+# Expects the three repositories checked out as siblings of this one:
+#
+#   parent/
+#   ├── skydex/            <- you are here
+#   ├── SkyDex-backend/
+#   ├── SkyDex-vision/
+#   └── SkyDex-android/
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: skydex
+      POSTGRES_USER: ${USUARIO_POSTGRES:-postgres}
+      POSTGRES_PASSWORD: ${SENHA_POSTGRES:-postgres}
+    volumes:
+      - skydex-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${USUARIO_POSTGRES:-postgres} -d skydex"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  vision:
+    build: ../SkyDex-vision
+    # Baking ~350MB of CLIP weights into the image makes the FIRST BUILD SLOW --
+    # several minutes. Every start after that is fast, and a container with no
+    # internet access still works.
+    volumes:
+      # The trained probe, mounted rather than baked so a retrain needs no
+      # rebuild. Without it the service runs zero-shot and says so in its model
+      # name.
+      - ../SkyDex-vision/data:/srv/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build: ../SkyDex-backend
+    depends_on:
+      db:
+        condition: service_healthy
+      vision:
+        condition: service_healthy
+    environment:
+      URL_POSTGRES: jdbc:postgresql://db:5432/skydex
+      USUARIO_POSTGRES: ${USUARIO_POSTGRES:-postgres}
+      SENHA_POSTGRES: ${SENHA_POSTGRES:-postgres}
+      TOKEN_JWT_SECRET: ${TOKEN_JWT_SECRET:?set TOKEN_JWT_SECRET in .env}
+      SERVER_PORT: ${SERVER_PORT:-3002}
+      PHOTO_STORAGE_DIR: /srv/data/photos
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3002}
+      VISION_BASE_URL: http://vision:8000
+      VISION_OUTDOOR_MIN: ${VISION_OUTDOOR_MIN:-0.60}
+      VISION_EXPECTED_SCORE_MAX: ${VISION_EXPECTED_SCORE_MAX:-0.10}
+      VISION_TOP_SCORE_MIN: ${VISION_TOP_SCORE_MIN:-0.70}
+    ports:
+      - "${SERVER_PORT:-3002}:${SERVER_PORT:-3002}"
+    volumes:
+      - skydex-photos:/srv/data/photos
+
+volumes:
+  skydex-db:
+  skydex-photos:
